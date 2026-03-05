@@ -1,8 +1,8 @@
 {
   "id": "community.tmdb.discover.plus",
-  "name": "TMDB Discover+",
+  "name": "Jim",
   "description": "Create custom movie and TV catalogs with powerful TMDB filters",
-  "version": "1.1.1",
+  "version": "1.0.0",
   "logo": "https://tmdb-discover-plus.elfhosted.com/logo.png",
   "idPrefixes": [
     "tmdb:",
@@ -40,38 +40,10 @@
             "Romance",
             "Science Fiction",
             "Thriller",
-            "TV Movie",
+            "TV Movie"
           ],
           "optionsLimit": 1,
           "isRequired": false
-        }
-      ]
-    },
-    {
-      "id": "tmdb-search-movie",
-      "type": "movie",
-      "name": "TMDB Search",
-      "extra": [
-        {
-          "name": "search",
-          "isRequired": true
-        },
-        {
-          "name": "skip"
-        }
-      ]
-    },
-    {
-      "id": "tmdb-search-series",
-      "type": "series",
-      "name": "TMDB Search",
-      "extra": [
-        {
-          "name": "search",
-          "isRequired": true
-        },
-        {
-          "name": "skip"
         }
       ]
     },
