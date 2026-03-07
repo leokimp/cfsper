@@ -12,7 +12,7 @@
         "movie",
         "tv"
       ],
-      "filename": "https://hdhub4u.<your-subdomain>.workers.dev/streams",
+      "filename": "https://hdhub4u.leokimpese.workers.dev/streams",
       "enabled": true,
       "formats": [
         "mp4",
