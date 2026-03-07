@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "lib": [
+      "ES2022",
+      "dom"
+    ],
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true
+  },
+  "tasks": {
+    "start": "deno run --allow-net --allow-env src/index.ts",
+    "dev": "deno run --allow-net --allow-env --watch src/index.ts",
+    "bundle": "deno bundle -o cloudscraper.js src/index.ts"
+  }
+}
