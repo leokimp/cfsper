@@ -1,0 +1,31 @@
+{
+  "name": "Jim",
+  "version": "1.0.0",
+  "scrapers": [
+    {
+      "id": "hdhub4u",
+      "name": "HD Server",
+      "description": "",
+      "version": "1.1.1",
+      "author": "Jim",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "https://hdhub4u.<your-subdomain>.workers.dev/streams",
+      "enabled": true,
+      "formats": [
+        "mp4",
+        "mkv"
+      ],
+      "logo": "",
+      "contentLanguage": [
+        "en",
+        "hi"
+      ], 
+      "limited": false,
+      "disabledPlatforms": [],
+      "supportsExternalPlayer": true
+    }
+  ]
+}
