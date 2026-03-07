@@ -12,7 +12,7 @@
         "movie",
         "tv"
       ],
-      "filename": "https://hdhub4u.leokimpese.workers.dev/streams",
+      "filename": "./hdhub4u-proxy.js",
       "enabled": true,
       "formats": [
         "mp4",
