@@ -873,8 +873,10 @@ async function _resolveRedirectChainInner(url, maxHops = 10) {
       try {
         const target = new URL(current).searchParams.get("link");
         if (target?.startsWith("http")) {
-          current = decodeURIComponent(target);
-          continue;
+          const extracted = decodeURIComponent(target);
+          console.log("[RESOLVE] Extracted direct link from dl.php param ✓");
+          resolvedUrlCache.set(url, extracted);
+          return extracted;
         }
       } catch {
       }
@@ -1273,14 +1275,10 @@ async function extractLinksInParallel(links, referer) {
   return flat;
 }
 function deduplicateByUrl(streams) {
-  const seen = new Set();
+  const seen = /* @__PURE__ */ new Set();
   return streams.filter((s) => {
-    const baseUrl = s.url.split("?")[0];
-    if (seen.has(baseUrl)) {
-      console.log("[Dedup] Skipping duplicate URL:", baseUrl.substring(0, 80));
-      return false;
-    } 
-    seen.add(baseUrl);
+    if (seen.has(s.url)) return false;
+    seen.add(s.url);
     return true;
   });
 }
