@@ -1572,7 +1572,7 @@ async function handler(request) {
     const manifest = {
       id: "com.hdhub4u.cloudscraper",
       version: "1.0.0",
-      name: "HDHub4u",
+      name: "Cloud Server",
       description: "1080p+ Hindi / Gujarati / English streams scraped from HDHub4u",
       resources: ["stream"],
       types: ["movie", "series"],
@@ -1620,7 +1620,7 @@ async function handler(request) {
       // Format streams to Stremio protocol shape
       const formatted = streams.map(s => ({
         name:  s.name  ?? "Stream",
-        title: s.title ?? "",
+        title: s.title ?? `${s.title}\n${s.size || "Unknown Size"}` : `${s.size || "Unknown Size"}`,
         url:   s.url,
         ...(s.headers ? {
           behaviorHints: {
