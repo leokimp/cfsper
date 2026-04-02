@@ -716,6 +716,7 @@ async function webstreamrExtractor(imdbId, mediaType, season, episode) {
 }
 // Module-level cache: prevents duplicate redirect resolution for the same URL
 var resolvedUrlCache = new Map();
+var _resolveInFlight = new Map();
 
 // src/resolver.ts
 var DIRECT_PATTERNS = [
@@ -799,6 +800,19 @@ async function resolveRedirectChain(url, maxHops = 10) {
     console.log("[RESOLVE] Cache hit:", url.substring(0, 60), "->", cached ? cached.substring(0, 60) : "null");
     return cached;
   }
+  if (_resolveInFlight.has(url)) {
+    console.log("[RESOLVE] In-flight hit:", url.substring(0, 60));
+    return _resolveInFlight.get(url);
+  }
+  const promise = _resolveRedirectChainInner(url, maxHops);
+  _resolveInFlight.set(url, promise);
+  try {
+    return await promise;
+  } finally {
+    _resolveInFlight.delete(url);
+  }
+}
+async function _resolveRedirectChainInner(url, maxHops = 10) {
   console.log("[RESOLVE] Starting:", url);
   let current = url;
   for (let hop = 0; hop < maxHops; hop++) {
