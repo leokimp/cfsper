@@ -286,11 +286,13 @@ function transformToProxyUrl(url) {
 }
 
 // src/cache.ts
-function cacheKey(tmdbId, mediaType, season, episode) {
-  return `${tmdbId}_${mediaType}_${season ?? "null"}_${episode ?? "null"}`;
+// CHANGED: parameter renamed from tmdbId -> contentId (accepts both IMDb and TMDB ids as cache key)
+function cacheKey(contentId, mediaType, season, episode) {
+  return `${contentId}_${mediaType}_${season ?? "null"}_${episode ?? "null"}`;
 }
-async function getCachedStreams(tmdbId, mediaType, season, episode) {
-  const key = cacheKey(tmdbId, mediaType, season, episode);
+// CHANGED: parameter renamed from tmdbId -> contentId
+async function getCachedStreams(contentId, mediaType, season, episode) {
+  const key = cacheKey(contentId, mediaType, season, episode);
   try {
     console.log("[CACHE] Fetching:", key);
     const res = await fetch(`${CACHE_API_BASE}/${key}`, {
@@ -319,8 +321,9 @@ async function getCachedStreams(tmdbId, mediaType, season, episode) {
     return null;
   }
 }
-async function setCachedStreams(tmdbId, mediaType, season, episode, streams, ttl = DEFAULT_TTL) {
-  const key = cacheKey(tmdbId, mediaType, season, episode);
+// CHANGED: parameter renamed from tmdbId -> contentId, metadata field tmdbId -> contentId
+async function setCachedStreams(contentId, mediaType, season, episode, streams, ttl = DEFAULT_TTL) {
+  const key = cacheKey(contentId, mediaType, season, episode);
   try {
     console.log(`[CACHE] Saving: ${key} (${streams.length} streams, TTL: ${ttl}s)`);
     const res = await fetch(CACHE_API_BASE, {
@@ -333,7 +336,7 @@ async function setCachedStreams(tmdbId, mediaType, season, episode, streams, ttl
         streams,
         ttl,
         metadata: {
-          tmdbId,
+          contentId,
           mediaType,
           season,
           episode,
@@ -1299,31 +1302,37 @@ function episodeSuffix(season, episode) {
 // the second awaits the same Promise instead of starting a duplicate pipeline.
 // This was causing double 61s scrapes and double cache writes in the logs.
 var _inFlight = /* @__PURE__ */ new Map();
-async function getStreams(tmdbId, mediaType, season, episode) {
-  const key = `${tmdbId}_${mediaType}_${season ?? "null"}_${episode ?? "null"}`;
+
+// CHANGED: getStreams now accepts a resolved object instead of (tmdbId, mediaType, season, episode).
+// The resolved object contains { contentId, imdbId, mediaType, title, year } so that
+// _getStreamsInner never needs to call TMDB or IMDb APIs itself — all ID resolution
+// is done once up-front in resolveIds() before getStreams() is called.
+async function getStreams(resolved, season, episode) {
+  const key = `${resolved.contentId}_${resolved.mediaType}_${season ?? "null"}_${episode ?? "null"}`;
   if (_inFlight.has(key)) {
     console.log("[HDHub4u] \u23F3 Awaiting in-flight request:", key);
     return _inFlight.get(key);
   }
-  const promise = _getStreamsInner(tmdbId, mediaType, season, episode, key);
+  const promise = _getStreamsInner(resolved, season, episode, key);
   _inFlight.set(key, promise);
   promise.finally(() => _inFlight.delete(key));
   return promise;
 }
-async function _getStreamsInner(tmdbId, mediaType, season, episode, _key) {
-  console.log("[HDHub4u] Starting:", tmdbId, mediaType, season, episode);
-  const cached = await getCachedStreams(tmdbId, mediaType, season, episode);
+
+// CHANGED: _getStreamsInner now accepts a resolved object instead of (tmdbId, mediaType, season, episode, _key).
+// The TMDB API fetch that was lines 1322-1326 in the original is now REMOVED entirely.
+// imdbId, displayTitle, and year come pre-resolved from the resolved object.
+// The setCachedStreams call now uses contentId instead of tmdbId as the cache key.
+async function _getStreamsInner(resolved, season, episode, _key) {
+  const { contentId, imdbId, mediaType, title: displayTitle, year } = resolved;
+  console.log("[HDHub4u] Starting:", contentId, mediaType, season, episode);
+  const cached = await getCachedStreams(contentId, mediaType, season, episode);
   if (cached) {
     console.log(`[HDHub4u] \u26A1 Cache hit: ${cached.length} streams`);
     triggerDomainUpdate();
     return cached;
   }
   triggerDomainUpdate();
-  const tmdbUrl = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=342c3872f1357c6e1da3a5ac1ccc3605&append_to_response=external_ids`;
-  const tmdbInfo = await fetch(tmdbUrl).then((r) => r.json());
-  const imdbId = tmdbInfo.imdb_id ?? tmdbInfo.external_ids?.imdb_id;
-  const displayTitle = (mediaType === "tv" ? tmdbInfo.name : tmdbInfo.title) ?? "";
-  const year = mediaType === "movie" ? tmdbInfo.release_date?.split("-")[0] ?? "" : tmdbInfo.first_air_date?.split("-")[0] ?? "";
   const [webstreamrResults, { nativeStreams, updatedTitle }] = await Promise.all([
     // ── 3a. WebStreamr path ──────────────────────────────────────────────────
     (async () => {
@@ -1442,7 +1451,8 @@ async function _getStreamsInner(tmdbId, mediaType, season, episode, _key) {
   const final = sortAndNumberStreams(deduped);
   console.log(`[HDHub4u] \u2705 ${final.length} streams`);
   try {
-    await setCachedStreams(tmdbId, mediaType, season, episode, final, 3600);
+    // CHANGED: was setCachedStreams(tmdbId, ...) — now uses contentId
+    await setCachedStreams(contentId, mediaType, season, episode, final, 3600);
     const stats = await getCacheStats();
     console.log(`[CACHE] Saved — ${stats.totalEntries ?? 0} entries`);
   } catch (err) {
@@ -1450,6 +1460,46 @@ async function _getStreamsInner(tmdbId, mediaType, season, episode, _key) {
   }
   return final;
 } // end _getStreamsInner
+
+// NEW: resolveIds — resolves any incoming ID (IMDb tt... or TMDB numeric/tmdb:...)
+// into a unified { contentId, imdbId, mediaType, title, year } object.
+// IMDb path: uses api.imdbapi.dev only — no TMDB call.
+// TMDB path: uses TMDB API only — no IMDb API call at this stage.
+async function resolveIds(rawId, stremioType) {
+  const mediaType = stremioType === "series" ? "tv" : "movie";
+
+  if (rawId.startsWith("tt")) {
+    // ── IMDb ID provided ──────────────────────────────────────────────────────
+    console.log("[resolveIds] IMDb path:", rawId);
+    const imdbRes = await fetch(`https://api.imdbapi.dev/titles/${rawId}`)
+      .then(r => r.json())
+      .catch(() => null);
+    return {
+      contentId: rawId,                                     // tt... used as cache key
+      imdbId:    rawId,
+      mediaType,
+      title:     imdbRes?.originalTitle ?? imdbRes?.primaryTitle ?? "",
+      year:      imdbRes?.startYear ? String(imdbRes.startYear) : ""
+    };
+
+  } else {
+    // ── TMDB ID provided (plain numeric or tmdb: prefixed) ────────────────────
+    const tmdbId = rawId.replace(/^tmdb:/i, "");
+    console.log("[resolveIds] TMDB path:", tmdbId);
+    const TMDB_KEY = "342c3872f1357c6e1da3a5ac1ccc3605";
+    const info = await fetch(
+      `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_KEY}&append_to_response=external_ids`
+    ).then(r => r.json()).catch(() => ({}));
+    return {
+      contentId: tmdbId,                                    // numeric tmdb id used as cache key
+      imdbId:    info.imdb_id ?? info.external_ids?.imdb_id ?? null,
+      mediaType,
+      title:     (mediaType === "tv" ? info.name : info.title) ?? "",
+      year:      (mediaType === "tv" ? info.first_air_date : info.release_date)?.split("-")[0] ?? ""
+    };
+  }
+}
+
 async function handler(request) {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -1474,14 +1524,17 @@ async function handler(request) {
     const stats = await getCacheStats();
     return json(stats);
   }
+
+  // CHANGED: /streams route now accepts either tmdbId or imdbId query param.
+  // Calls resolveIds() first, then passes the resolved object into getStreams().
   if (path === "/streams") {
-    const tmdbId = url.searchParams.get("tmdbId");
+    const rawId    = url.searchParams.get("tmdbId") ?? url.searchParams.get("imdbId");
     const mediaType = url.searchParams.get("type") ?? url.searchParams.get("mediaType");
-    const season = parseNullableParam(url.searchParams.get("season"));
-    const episode = parseNullableParam(url.searchParams.get("episode"));
-    if (!tmdbId || !mediaType) {
+    const season   = parseNullableParam(url.searchParams.get("season"));
+    const episode  = parseNullableParam(url.searchParams.get("episode"));
+    if (!rawId || !mediaType) {
       return json({
-        error: "Missing required params: tmdbId, type"
+        error: "Missing required params: tmdbId or imdbId, type"
       }, 400);
     }
     if (![
@@ -1498,7 +1551,8 @@ async function handler(request) {
       }, 400);
     }
     try {
-      const streams = await getStreams(tmdbId, mediaType, season, episode);
+      const resolved = await resolveIds(rawId, mediaType === "tv" ? "series" : "movie");
+      const streams = await getStreams(resolved, season, episode);
       return json({
         streams,
         count: streams.length
@@ -1511,10 +1565,85 @@ async function handler(request) {
       }, 500);
     }
   }
+
+  // NEW: Stremio addon manifest endpoint
+  // Install in Nuvio by pasting: https://cfsper.up.railway.app/manifest.json
+  if (path === "/manifest.json") {
+    const manifest = {
+      id: "com.hdhub4u.cloudscraper",
+      version: "1.0.0",
+      name: "HDHub4u",
+      description: "1080p+ Hindi / Gujarati / English streams scraped from HDHub4u",
+      resources: ["stream"],
+      types: ["movie", "series"],
+      idPrefixes: ["tt", "tmdb:"],
+      catalogs: [],
+      behaviorHints: { adult: false, p2p: false }
+    };
+    return new Response(JSON.stringify(manifest), {
+      status: 200,
+      headers: CORS
+    });
+  }
+
+  // NEW: Stremio stream endpoint — called by Nuvio/Stremio when a user opens a title.
+  // Movie:  GET /stream/movie/tt1234567.json
+  // Movie:  GET /stream/movie/tmdb:12345.json
+  // Series: GET /stream/series/tt1234567:1:2.json   (id:season:episode)
+  // Series: GET /stream/series/tmdb:12345:1:2.json
+  const streamMatch = path.match(/^\/stream\/(movie|series)\/(.+)\.json$/);
+  if (streamMatch) {
+    const stremioType = streamMatch[1];       // "movie" or "series"
+    const rawSegment  = streamMatch[2];       // e.g. "tt1234567:1:2" or "tmdb:12345:1:2"
+
+    // Parse baseId, season, episode carefully.
+    // tmdb: prefix itself contains a colon so we cannot blindly split on ":".
+    let baseId, season, episode;
+    if (rawSegment.startsWith("tmdb:")) {
+      // Strip "tmdb:" prefix then split remainder on ":"
+      const withoutPrefix = rawSegment.slice(5);   // "12345" or "12345:1:2"
+      const parts = withoutPrefix.split(":");
+      baseId  = "tmdb:" + parts[0];               // restore prefix for resolveIds
+      season  = parts[1] ?? null;
+      episode = parts[2] ?? null;
+    } else {
+      // IMDb id: "tt1234567" or "tt1234567:1:2"
+      const parts = rawSegment.split(":");
+      baseId  = parts[0];
+      season  = parts[1] ?? null;
+      episode = parts[2] ?? null;
+    }
+
+    try {
+      const resolved  = await resolveIds(baseId, stremioType);
+      const streams   = await getStreams(resolved, season, episode);
+      // Format streams to Stremio protocol shape
+      const formatted = streams.map(s => ({
+        name:  s.name  ?? "Stream",
+        title: s.title ?? "",
+        url:   s.url,
+        ...(s.headers ? {
+          behaviorHints: {
+            notWebReady: false,
+            proxyHeaders: { request: s.headers }
+          }
+        } : {})
+      }));
+      return json({ streams: formatted });
+    } catch (err) {
+      console.error("[Stremio] Stream error:", err);
+      return json({ streams: [] });
+    }
+  }
+
+  // CHANGED: 404 endpoints list updated to include new Stremio routes
   return json({
     error: "Not found",
     endpoints: [
-      "GET  /streams?tmdbId=&type=movie|tv[&season=&episode=]",
+      "GET  /streams?tmdbId=|imdbId=&type=movie|tv[&season=&episode=]",
+      "GET  /manifest.json",
+      "GET  /stream/movie/:id.json",
+      "GET  /stream/series/:id:season:episode.json",
       "GET  /cache/stats",
       "POST /cache/clear",
       "GET  /health"
