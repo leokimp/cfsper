@@ -1301,11 +1301,8 @@ async function getStreams(tmdbId, mediaType, season, episode) {
   }
   const promise = _getStreamsInner(tmdbId, mediaType, season, episode, key);
   _inFlight.set(key, promise);
-  try {
-    return await promise;
-  } finally {
-    _inFlight.delete(key);
-  }
+  promise.finally(() => _inFlight.delete(key));
+  return promise;
 }
 async function _getStreamsInner(tmdbId, mediaType, season, episode, _key) {
   console.log("[HDHub4u] Starting:", tmdbId, mediaType, season, episode);
@@ -1438,7 +1435,13 @@ async function _getStreamsInner(tmdbId, mediaType, season, episode, _key) {
   }
   const final = sortAndNumberStreams(deduped);
   console.log(`[HDHub4u] \u2705 ${final.length} streams`);
-  setCachedStreams(tmdbId, mediaType, season, episode, final, 3600).then(() => getCacheStats()).then((stats) => console.log(`[CACHE] Saved \u2014 ${stats.totalEntries ?? 0} entries`)).catch((err) => console.log("[CACHE] Background save error:", err.message));
+  try {
+    await setCachedStreams(tmdbId, mediaType, season, episode, final, 3600);
+    const stats = await getCacheStats();
+    console.log(`[CACHE] Saved — ${stats.totalEntries ?? 0} entries`);
+  } catch (err) {
+    console.log("[CACHE] Background save error:", err.message);
+  }
   return final;
 } // end _getStreamsInner
 async function handler(request) {
