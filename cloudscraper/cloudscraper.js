@@ -61,7 +61,9 @@ function calcTitleSim(query, candidate) {
   const norm = (s) => s.replace(/&amp;/gi, "&").toLowerCase().replace(/\s*&\s*/g, " and ").replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
   const q = norm(query), c = norm(candidate);
   if (!q || !c) return 0;
-  if (c.includes(q)) return 0.95;
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (new RegExp(`^${escaped}\\b`).test(c)) return 0.95;
+  if (new RegExp(`\\b${escaped}\\b`).test(c)) return 0.72;
   return Math.max(seqRatio(q, c), jaccardWords(q, c));
 }
 function parseSize(str) {
@@ -435,9 +437,12 @@ async function performSingleSearch(query) {
     return [];
   }
 }
-async function performParallelSearch(queries, year) {
+async function performParallelSearch(queries, year, mediaType) {
   console.log("[Search] Queue:", queries);
-  const allResults = await Promise.all(queries.map((q) => performSingleSearch(q)));
+  const searchQueries = (year && mediaType === "movie")
+    ? queries.map((q) => q.includes(year) ? q : q + " " + year)
+    : queries;
+  const allResults = await Promise.all(searchQueries.map((q) => performSingleSearch(q)));
   const scored = [];
   for (let i = 0; i < allResults.length; i++) {
     for (const r of allResults[i]) {
@@ -709,6 +714,8 @@ async function webstreamrExtractor(imdbId, mediaType, season, episode) {
     return [];
   }
 }
+// Module-level cache: prevents duplicate redirect resolution for the same URL
+var resolvedUrlCache = new Map();
 
 // src/resolver.ts
 var DIRECT_PATTERNS = [
@@ -787,12 +794,65 @@ function tryDecodeEncodedUrl(html) {
   }
 }
 async function resolveRedirectChain(url, maxHops = 10) {
+  if (resolvedUrlCache.has(url)) {
+    const cached = resolvedUrlCache.get(url);
+    console.log("[RESOLVE] Cache hit:", url.substring(0, 60), "->", cached ? cached.substring(0, 60) : "null");
+    return cached;
+  }
   console.log("[RESOLVE] Starting:", url);
   let current = url;
   for (let hop = 0; hop < maxHops; hop++) {
     console.log(`[RESOLVE] Hop ${hop + 1}:`, current);
     if (current.includes("pixel.hubcdn.fans")) {
-      current = current.replace("pixel.hubcdn.fans", "gpdl.hubcdn.fans");
+      try {
+        const pixelController = new AbortController();
+        const pixelTimer = setTimeout(() => pixelController.abort(), 5000);
+        const pixelResponse = await fetch(current, { headers: HEADERS, signal: pixelController.signal });
+        clearTimeout(pixelTimer);
+        const MAX_PIXEL_BYTES = 32768;
+        let pixelHtml = "";
+        const reader = pixelResponse.body?.getReader();
+        if (reader) {
+          const decoder = new TextDecoder();
+          let bytesRead = 0;
+          try {
+            while (bytesRead < MAX_PIXEL_BYTES) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              pixelHtml += decoder.decode(value, { stream: true });
+              bytesRead += value.length;
+            }
+          } finally {
+            reader.cancel();
+          }
+        } else {
+          const buf = await pixelResponse.arrayBuffer();
+          pixelHtml = new TextDecoder().decode(new Uint8Array(buf).slice(0, MAX_PIXEL_BYTES));
+        }
+        const decoded = tryDecodeEncodedUrl(pixelHtml);
+        if (decoded && decoded.startsWith("http")) {
+          console.log("[RESOLVE] Decrypted direct URL from pixel.hubcdn.fans:", decoded);
+          resolvedUrlCache.set(url, decoded);
+          return decoded;
+        }
+        console.log("[RESOLVE] pixel.hubcdn.fans no encoded URL, swapping to gpdl");
+        current = current.replace("pixel.hubcdn.fans", "gpdl.hubcdn.fans");
+      }catch (e) {
+        const isNetworkError = e.message && (
+          e.message.includes("Network request failed") ||
+          e.message.includes("network") ||
+          e.message.includes("fetch") ||
+          e.message.includes("ECONNREFUSED") ||
+          e.message.includes("ENOTFOUND")
+        );
+        if (isNetworkError) {
+          console.log("[RESOLVE] pixel.hubcdn.fans is network-blocked — returning null");
+          resolvedUrlCache.set(url, null);
+          return null;
+        }
+        console.log("[RESOLVE] pixel.hubcdn.fans decrypt failed, falling back to gpdl:", e.message);
+        current = current.replace("pixel.hubcdn.fans", "gpdl.hubcdn.fans");
+      }
       console.log("[RESOLVE] Swapped CDN URL:", current);
     }
     if (current.includes("dl.php?link=")) {
@@ -807,6 +867,7 @@ async function resolveRedirectChain(url, maxHops = 10) {
     }
     if (isDirectLink(current)) {
       console.log("[RESOLVE] Direct link \u2713");
+      resolvedUrlCache.set(url, current);
       return current;
     }
     try {
@@ -858,6 +919,7 @@ async function resolveRedirectChain(url, maxHops = 10) {
           const m = html.match(pat);
           if (m) {
             console.log("[RESOLVE] Direct URL in HTML \u2713");
+            resolvedUrlCache.set(url, m[0]);
             return m[0];
           }
         }
@@ -889,8 +951,10 @@ async function resolveRedirectChain(url, maxHops = 10) {
           }
         }
         console.log("[RESOLVE] No more redirects on this page");
-        if (isRedirectLink(current)) return null;
-        return await verifyStreamUrl(current) ? current : null;
+        if (isRedirectLink(current)) { resolvedUrlCache.set(url, null); return null; }
+        const verified3 = await verifyStreamUrl(current) ? current : null;
+        resolvedUrlCache.set(url, verified3);
+        return verified3;
       }
       return await verifyStreamUrl(current) ? current : null;
     } catch (err) {
@@ -899,8 +963,10 @@ async function resolveRedirectChain(url, maxHops = 10) {
     }
   }
   console.log("[RESOLVE] Max hops reached");
-  if (isRedirectLink(current)) return null;
-  return await verifyStreamUrl(current) ? current : null;
+  if (isRedirectLink(current)) { resolvedUrlCache.set(url, null); return null; }
+  const verifiedFinal = await verifyStreamUrl(current) ? current : null;
+  resolvedUrlCache.set(url, verifiedFinal);
+  return verifiedFinal;
 }
 async function getRedirectLinks(url) {
   console.log("[REDIRECT] Processing:", url);
@@ -1193,17 +1259,21 @@ async function extractLinksInParallel(links, referer) {
   return flat;
 }
 function deduplicateByUrl(streams) {
-  const seen = /* @__PURE__ */ new Set();
+  const seen = new Set();
   return streams.filter((s) => {
-    if (seen.has(s.url)) return false;
-    seen.add(s.url);
+    const baseUrl = s.url.split("?")[0];
+    if (seen.has(baseUrl)) {
+      console.log("[Dedup] Skipping duplicate URL:", baseUrl.substring(0, 80));
+      return false;
+    } 
+    seen.add(baseUrl);
     return true;
   });
 }
 function episodeSuffix(season, episode) {
   if (!season || !episode) return "";
-  const s = season.padStart(2, "0");
-  const e = episode.padStart(2, "0");
+  const s = String(season).padStart(2, "0");
+  const e = String(episode).padStart(2, "0");
   return `S${s}E${e}`;
 }
 // FIX #2: In-flight request deduplication
@@ -1267,7 +1337,14 @@ async function _getStreamsInner(tmdbId, mediaType, season, episode, _key) {
           for (const aka of indianAkas) if (!searchQueue.includes(aka)) searchQueue.push(aka);
         }
         if (!searchQueue.length) searchQueue.push(updatedTitle2);
-        const { results: searchResults } = await performParallelSearch(searchQueue, year);
+        const titleForVariant = updatedTitle2 ?? displayTitle;
+        const partNumberMatch = titleForVariant.match(/^([^:\-–]+).*?(?:Part|Pt\.?)\s*(\d+)\s*$/i);
+        if (partNumberMatch) {
+          const shortVariant = `${partNumberMatch[1].trim()} ${partNumberMatch[2]}`;
+          console.log("[HDHub4u] Adding sequel short variant:", shortVariant);
+          if (!searchQueue.includes(shortVariant)) searchQueue.push(shortVariant);
+        }
+        const { results: searchResults } = await performParallelSearch(searchQueue, year, mediaType);
         if (!searchResults.length) {
           console.log("[HDHub4u] No search results");
           return {
@@ -1285,8 +1362,9 @@ async function _getStreamsInner(tmdbId, mediaType, season, episode, _key) {
         }
         console.log("[HDHub4u] Page:", bestMatch.title);
         const pageHtml = await fetchText(bestMatch.url);
-        const links = extractLinks(pageHtml, mediaType, season, episode);
-        console.log(`[HDHub4u] ${links.length} candidate links`);
+        const rawLinks = extractLinks(pageHtml, mediaType, season, episode);
+        const links = [...new Set(rawLinks)];
+        console.log(`[HDHub4u] ${links.length} candidate links (deduped from ${rawLinks.length})`);
         const extracted = await extractLinksInParallel(links, bestMatch.url);
         const streams = [];
         for (const res of extracted) {
@@ -1422,8 +1500,9 @@ async function handler(request) {
     ]
   }, 404);
 }
-var port = parseInt(Deno.env.get("PORT") ?? "8000");
-console.log(`[HDHub4u] \u{1F995} Deno server running on http://localhost:${port}`);
-Deno.serve({
-  port
-}, handler);
+if (!Deno.env.get("TEST_MODE")) {
+  var port = parseInt(Deno.env.get("PORT") ?? "8000");
+  console.log(`[HDHub4u] 🦕 Deno server running on http://localhost:${port}`);
+  Deno.serve({ port }, handler);
+}
+export { getStreams };
