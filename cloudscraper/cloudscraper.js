@@ -1275,24 +1275,11 @@ async function extractLinksInParallel(links, referer) {
   return flat;
 }
 function deduplicateByUrl(streams) {
-  const seen = new Set();
+  const seen = /* @__PURE__ */ new Set();
   return streams.filter((s) => {
-    try {
-      const u = new URL(s.url);
-      u.searchParams.delete("token");
-      const normalised = u.toString();
-      if (seen.has(normalised)) {
-        console.log("[Dedup] Skipping duplicate URL:", normalised.substring(0, 80));
-        return false;
-      }
-      seen.add(normalised);
-      return true;
-    } catch {
-      // fallback for malformed URLs — use as-is
-      if (seen.has(s.url)) return false;
-      seen.add(s.url);
-      return true;
-    }
+    if (seen.has(s.url)) return false;
+    seen.add(s.url);
+    return true;
   });
 }
 function episodeSuffix(season, episode) {
