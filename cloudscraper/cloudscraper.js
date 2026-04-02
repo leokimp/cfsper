@@ -206,26 +206,32 @@ async function performDomainUpdate() {
     HEADERS.Origin = MAIN_URL;
   }
 }
-async function fetchWithRetry(url, customHeaders = {}, maxRetries = 2) {
-  const headers = {
-    ...HEADERS,
-    ...customHeaders
-  };
+async function fetchWithRetry(url, customHeaders = {}, maxRetries = 2, timeoutMs = 5000) {
+  const headers = { ...HEADERS, ...customHeaders };
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
-      const response = await fetch(url, {
-        headers
-      });
+      const response = await fetch(url, { headers, signal: controller.signal });
+      clearTimeout(timer);
+      
       if (!response.ok && attempt < maxRetries) {
-        console.log(`[HTTP] Retry ${attempt + 1}/${maxRetries}:`, url);
-        await sleep(1e3 * (attempt + 1));
+        console.log(`[HTTP] Retry ${attempt + 1}/${maxRetries} (${response.status}):`, url);
+        await sleep(1000 * (attempt + 1));
         continue;
       }
       return response;
     } catch (err) {
-      if (attempt === maxRetries) throw err;
-      console.log(`[HTTP] Attempt ${attempt + 1} failed, retrying:`, err.message);
-      await sleep(1e3 * (attempt + 1));
+      clearTimeout(timer);
+      const isTimeout = err.name === "AbortError" || err.message.includes("timeout");
+      const reason = isTimeout ? `Timeout (${timeoutMs}ms)` : err.message;
+      
+      if (attempt === maxRetries) {
+        throw new Error(`Fetch failed: ${reason}`);
+      }
+      console.log(`[HTTP] Attempt ${attempt + 1} failed (${reason}), retrying:`, url);
+      await sleep(1000 * (attempt + 1));
     }
   }
   throw new Error("Max retries reached");
