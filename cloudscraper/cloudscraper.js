@@ -1620,7 +1620,7 @@ async function handler(request) {
       // Format streams to Stremio protocol shape
       const formatted = streams.map(s => ({
         name:  s.name  ?? "Stream",
-        title: s.title ?? `${s.title}\n${s.size || "Unknown Size"}` : `${s.size || "Unknown Size"}`,
+        title: s.title ? `${s.title}\n${s.size || ""}` : `${s.size || ""}`,
         url:   s.url,
         ...(s.headers ? {
           behaviorHints: {
