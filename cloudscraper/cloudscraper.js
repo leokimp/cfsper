@@ -1594,7 +1594,7 @@ async function handler(request) {
   const streamMatch = path.match(/^\/stream\/(movie|series)\/(.+)\.json$/);
   if (streamMatch) {
     const stremioType = streamMatch[1];       // "movie" or "series"
-    const rawSegment  = streamMatch[2];       // e.g. "tt1234567:1:2" or "tmdb:12345:1:2"
+    const rawSegment  = decodeURIComponent(streamMatch[2]);       // e.g. "tt1234567:1:2" or "tmdb:12345:1:2"
 
     // Parse baseId, season, episode carefully.
     // tmdb: prefix itself contains a colon so we cannot blindly split on ":".
